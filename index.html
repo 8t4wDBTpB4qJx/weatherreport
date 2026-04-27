@@ -1,0 +1,984 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>NexGen 气象监测中枢 v4.8 - 简报海报版</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"Noto Sans SC"', 'sans-serif'],
+                        cyber: ['Rajdhani', 'sans-serif'],
+                        mono: ['"Share Tech Mono"', 'monospace'],
+                    },
+                    colors: {
+                        neonBlue: '#00d2ff',
+                        glassBg: 'rgba(5, 11, 20, 0.5)',
+                        glassBorder: 'rgba(0, 210, 255, 0.15)'
+                    }
+                }
+            }
+        }
+    </script>
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .glass-panel { @apply bg-glassBg backdrop-blur-md border border-glassBorder shadow-[0_4px_30px_rgba(0,210,255,0.1)] rounded-xl; }
+            .glow-text { text-shadow: 0 0 15px rgba(0, 210, 255, 0.8); }
+            .interactive-hover { @apply transition-all duration-300 hover:border-neonBlue/50 hover:shadow-[0_0_25px_rgba(0,210,255,0.3)] hover:-translate-y-1; }
+            .no-scrollbar::-webkit-scrollbar { display: none; }
+            .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        }
+
+        @keyframes gridMove { 0% { background-position: 50% 0%, 0 0, 0 0; } 100% { background-position: 50% 0%, 50px 50px, 50px 50px; } }
+
+        body {
+            background-color: #02050a;
+            background-image: radial-gradient(circle at 50% -20%, rgba(0, 100, 180, 0.2) 0%, transparent 70%), linear-gradient(rgba(0, 210, 255, 0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 210, 255, 0.02) 1px, transparent 1px);
+            background-size: 100% 100%, 50px 50px, 50px 50px; color: #e2e8f0; animation: gridMove 20s linear infinite;
+        }
+
+        .leaflet-container { font-family: 'Noto Sans SC', sans-serif; background: #0a0a0a; border-radius: 0.5rem; }
+        .leaflet-popup-content-wrapper { background: rgba(5, 11, 20, 0.95); color: #fff; border: 1px solid rgba(0, 210, 255, 0.4); backdrop-filter: blur(10px); border-radius: 8px; }
+        .leaflet-popup-tip { background: rgba(5, 11, 20, 0.95); border-bottom: 1px solid rgba(0, 210, 255, 0.4); border-right: 1px solid rgba(0, 210, 255, 0.4); }
+        .custom-div-icon { background: none; border: none; }
+        .marker-pulse { width: 24px; height: 24px; background: #00d2ff; border-radius: 50%; box-shadow: 0 0 0 rgba(0, 210, 255, 0.8); animation: pulse-animation 2s infinite; border: 2px solid white; }
+        @keyframes pulse-animation { 0% { transform: scale(0.85); box-shadow: 0 0 0 0 rgba(0, 210, 255, 0.7); } 70% { transform: scale(1); box-shadow: 0 0 0 15px rgba(0, 210, 255, 0); } 100% { transform: scale(0.85); box-shadow: 0 0 0 0 rgba(0, 210, 255, 0); } }
+        
+        .log-entry { animation: fadeIn 0.3s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+
+        @media (max-width: 1279px) {
+            .mobile-section { display: none !important; }
+            .mobile-section.active { display: flex !important; }
+        }
+        .pb-safe { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
+        .pt-safe { padding-top: max(0.75rem, env(safe-area-inset-top)); }
+    </style>
+</head>
+<body class="min-h-screen relative overflow-x-hidden font-sans flex flex-col pt-safe">
+
+    <!-- 背景画布 -->
+    <canvas id="bg-canvas" class="fixed inset-0 z-0 pointer-events-none"></canvas>
+
+    <!-- 顶栏 -->
+    <header class="relative z-20 w-full px-4 md:px-6 py-4 flex justify-between items-center border-b border-white/10 glass-panel !rounded-none !border-x-0 !border-t-0">
+        <div class="flex items-center gap-2 md:gap-3">
+            <i data-lucide="compass" class="text-neonBlue w-6 h-6 md:w-7 md:h-7 animate-[spin_20s_linear_infinite]"></i>
+            <div>
+                <h1 class="font-cyber text-lg md:text-2xl font-bold tracking-[0.1em] text-white glow-text">NexGen 气象中枢</h1>
+            </div>
+        </div>
+        <div class="flex items-center gap-4 md:gap-6">
+            <button onclick="exportSnapshot()" class="text-neonBlue hover:text-white transition-colors hover:scale-110 transform" title="生成简报长图">
+                <i data-lucide="camera" class="w-5 h-5 md:w-6 md:h-6"></i>
+            </button>
+            <div class="text-right hidden sm:block">
+                <p class="font-cyber text-neonBlue text-lg glow-text" id="global-clock">00:00:00</p>
+                <p class="text-[10px] text-gray-400 tracking-widest">系统时间</p>
+            </div>
+        </div>
+    </header>
+
+    <main class="relative z-20 w-full max-w-[1600px] mx-auto p-4 md:p-6 flex-1 grid grid-cols-1 xl:grid-cols-12 gap-6 pb-24 xl:pb-6">
+        
+        <!-- ================= Desktop Column 1 & Mobile Section 1 ================= -->
+        <section class="xl:col-span-4 flex flex-col gap-6">
+            <!-- 桌面端专享：搜索框 -->
+            <div class="glass-panel p-2 relative z-50 hidden xl:block">
+                <div class="flex items-center bg-black/40 rounded-lg overflow-hidden border border-transparent focus-within:border-neonBlue/50 transition-all shadow-inner">
+                    <div class="p-3 text-neonBlue"><i data-lucide="search" class="w-5 h-5 animate-pulse"></i></div>
+                    <input type="text" id="city-input-desktop" placeholder="检索目标城市..." class="flex-1 bg-transparent py-3 outline-none text-sm tracking-widest text-white placeholder-gray-500 font-bold">
+                </div>
+                <div id="search-suggestions-desktop" class="absolute top-full left-0 right-0 mt-2 glass-panel hidden flex-col z-50 p-2 gap-1 border-neonBlue/30 shadow-[0_10px_30px_rgba(0,210,255,0.2)] max-h-[250px] overflow-y-auto"></div>
+            </div>
+
+            <!-- Mobile Section 1: 精细选点 (已修复 CSS flexbox 高度计算) -->
+            <div id="m-tab-1" class="mobile-section flex flex-col gap-6 w-full flex-1">
+                <div class="glass-panel p-1 flex-1 min-h-[55vh] xl:min-h-[400px] flex flex-col relative interactive-hover w-full" id="map-container">
+                    <div class="absolute top-4 left-4 z-[400] bg-black/80 backdrop-blur border border-neonBlue/30 px-3 py-1.5 rounded flex items-center pointer-events-none shadow-[0_0_10px_rgba(0,210,255,0.2)]">
+                        <div class="w-2 h-2 rounded-full bg-neonBlue animate-ping mr-3 absolute"></div>
+                        <div class="w-2 h-2 rounded-full bg-neonBlue mr-3"></div>
+                        <span class="text-xs text-white tracking-widest font-bold" id="map-status">触控地图精细选点</span>
+                    </div>
+                    <div id="map" class="w-full flex-1 rounded-lg z-10 relative"></div>
+                </div>
+
+                <div class="glass-panel p-4 h-48 flex flex-col">
+                    <p class="text-xs text-neonBlue/90 mb-2 flex items-center border-b border-neonBlue/20 pb-2 tracking-widest font-bold">
+                        <i data-lucide="terminal-square" class="w-4 h-4 mr-2"></i>终端活动日志
+                    </p>
+                    <div class="font-mono text-[11px] text-gray-300 overflow-y-auto no-scrollbar flex flex-col-reverse gap-1 mt-1" id="sys-log">
+                        <p class="border-l-2 border-neonBlue pl-2"><span class="text-neonBlue">[$INIT]</span> 系统启动成功，各类传感器就绪。</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= Desktop Column 2 & Mobile Sections 2/3 ================= -->
+        <section class="xl:col-span-8 flex flex-col gap-6">
+            
+            <!-- ====== Mobile Section 2: 气象全景 ====== -->
+            <div id="m-tab-2" class="mobile-section active flex flex-col gap-6 w-full">
+                <!-- 移动端专享：搜索框 -->
+                <div class="glass-panel p-2 relative z-50 xl:hidden">
+                    <div class="flex items-center bg-black/40 rounded-lg overflow-hidden border border-transparent focus-within:border-neonBlue/50 transition-all shadow-inner">
+                        <div class="p-3 text-neonBlue"><i data-lucide="search" class="w-5 h-5 animate-pulse"></i></div>
+                        <input type="text" id="city-input-mobile" placeholder="检索目标城市..." class="flex-1 bg-transparent py-3 outline-none text-sm tracking-widest text-white placeholder-gray-500 font-bold">
+                    </div>
+                    <div id="search-suggestions-mobile" class="absolute top-full left-0 right-0 mt-2 glass-panel hidden flex-col z-50 p-2 gap-1 border-neonBlue/30 shadow-[0_10px_30px_rgba(0,210,255,0.2)] max-h-[250px] overflow-y-auto"></div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 w-full">
+                    <!-- 主观测数据卡片 -->
+                    <div class="glass-panel p-6 lg:col-span-2 flex flex-col justify-between interactive-hover relative overflow-hidden group">
+                        <div id="card-glow" class="absolute top-0 right-0 w-80 h-80 bg-neonBlue/10 rounded-full blur-[90px] pointer-events-none transition-all group-hover:bg-neonBlue/20"></div>
+                        
+                        <div class="flex justify-between items-start relative z-10">
+                            <div>
+                                <p class="text-xs text-gray-400 tracking-widest mb-1 flex items-center">
+                                    <i data-lucide="crosshair" class="w-3 h-3 mr-1 text-neonBlue"></i> 定位锚点
+                                </p>
+                                <h2 id="city-name" class="text-3xl md:text-4xl font-bold tracking-widest text-white glow-text">待命中</h2>
+                                <p class="text-xs text-gray-400 mt-2 font-mono" id="coords-text">Lat: -- / Lng: --</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-xs text-gray-400 tracking-widest mb-1">节点健康度</p>
+                                <div class="inline-flex items-center px-3 py-1 rounded border border-green-500 text-green-400 text-xs font-bold shadow-[0_0_10px_rgba(74,222,128,0.3)] bg-green-900/20" id="status-badge">稳定运作</div>
+                            </div>
+                        </div>
+
+                        <div class="flex items-end justify-between mt-8 relative z-10">
+                            <div class="flex items-center gap-4 md:gap-6">
+                                <i data-lucide="cloud" class="w-20 h-20 md:w-24 md:h-24 text-gray-300" id="main-icon"></i>
+                                <div>
+                                    <div class="flex items-start">
+                                        <span id="temperature" class="font-cyber text-6xl md:text-8xl font-bold glow-text leading-none text-white drop-shadow-lg">--</span>
+                                        <span class="font-cyber text-2xl md:text-3xl text-neonBlue ml-1 md:ml-2 mt-1 md:mt-2">°C</span>
+                                    </div>
+                                    <h3 id="weather-text" class="text-xl md:text-2xl tracking-widest text-gray-200 mt-2 font-bold drop-shadow">--</h3>
+                                </div>
+                            </div>
+                            <div class="text-right hidden sm:block">
+                                <p class="text-sm text-gray-400 mb-2">体感温度 <span id="feels-like" class="text-white font-cyber text-xl ml-2">--°C</span></p>
+                                <p class="text-sm text-gray-400">大气湿度 <span id="humidity-info" class="text-neonBlue font-cyber text-xl ml-2 glow-text">--%</span></p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 空气质量雷达 -->
+                    <div class="glass-panel p-6 flex flex-col interactive-hover relative overflow-hidden">
+                        <div class="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-5 mix-blend-overlay"></div>
+                        <p class="text-xs text-neonBlue/90 mb-4 flex items-center tracking-widest font-bold relative z-10">
+                            <i data-lucide="wind" class="w-4 h-4 mr-2"></i>大气纯净度 (AQI)
+                        </p>
+                        <div class="flex-1 flex flex-col items-center justify-center relative z-10">
+                            <div class="relative flex items-center justify-center mb-4 group">
+                                <svg class="w-32 h-32 transform -rotate-90 drop-shadow-[0_0_10px_rgba(0,0,0,0.5)]">
+                                    <circle cx="64" cy="64" r="54" stroke="currentColor" stroke-width="6" fill="transparent" class="text-white/5"/>
+                                    <circle id="aqi-circle" cx="64" cy="64" r="54" stroke="currentColor" stroke-width="6" fill="transparent" stroke-dasharray="339.3" stroke-dashoffset="339.3" stroke-linecap="round" class="text-green-400 transition-all duration-1000 ease-out"/>
+                                </svg>
+                                <div class="absolute flex flex-col items-center group-hover:scale-110 transition-transform">
+                                    <span class="font-cyber text-4xl font-bold text-white glow-text" id="aqi-val">--</span>
+                                </div>
+                            </div>
+                            <h4 class="text-xl font-bold tracking-widest text-green-400" id="aqi-tag">待机中</h4>
+                            <p class="text-xs text-gray-400 mt-2 text-center leading-relaxed px-2" id="aqi-advice">请选定坐标评估环境。</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 数据仪表板 -->
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 w-full">
+                    <div class="glass-panel p-4 flex flex-col interactive-hover bg-gradient-to-br from-glassBg to-black/40">
+                        <p class="text-[10px] md:text-xs text-gray-400 mb-2 flex items-center"><i data-lucide="flag" class="w-3 h-3 mr-1 text-neonBlue"></i> 风速风向</p>
+                        <p class="font-cyber text-xl md:text-2xl text-white mt-auto glow-text"><span id="wind-speed">--</span> <span class="text-xs md:text-sm text-neonBlue">km/h</span></p>
+                    </div>
+                    <div class="glass-panel p-4 flex flex-col interactive-hover bg-gradient-to-br from-glassBg to-black/40">
+                        <p class="text-[10px] md:text-xs text-gray-400 mb-2 flex items-center"><i data-lucide="gauge" class="w-3 h-3 mr-1 text-neonBlue"></i> 绝对气压</p>
+                        <p class="font-cyber text-xl md:text-2xl text-white mt-auto glow-text"><span id="pressure-val">--</span> <span class="text-xs md:text-sm text-neonBlue">hPa</span></p>
+                    </div>
+                    <div class="glass-panel p-4 flex flex-col interactive-hover bg-gradient-to-br from-glassBg to-black/40">
+                        <p class="text-[10px] md:text-xs text-gray-400 mb-2 flex items-center"><i data-lucide="eye" class="w-3 h-3 mr-1 text-neonBlue"></i> 视距测算</p>
+                        <p class="font-cyber text-xl md:text-2xl text-white mt-auto glow-text"><span id="vis-val">--</span> <span class="text-xs md:text-sm text-neonBlue">km</span></p>
+                    </div>
+                    <div class="glass-panel p-4 flex flex-col interactive-hover bg-gradient-to-br from-glassBg to-black/40">
+                        <p class="text-[10px] md:text-xs text-gray-400 mb-2 flex items-center"><i data-lucide="sun" class="w-3 h-3 mr-1 text-neonBlue"></i> 紫外辐射</p>
+                        <p class="font-cyber text-xl md:text-2xl text-white mt-auto glow-text"><span id="uv-val">--</span> <span class="text-xs md:text-sm text-neonBlue" id="uv-tag"></span></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ====== Mobile Section 3: 综合控制面板 ====== -->
+            <div id="m-tab-3" class="mobile-section flex flex-col gap-6 w-full flex-1">
+                <div class="glass-panel p-4 md:p-6 flex flex-col flex-1 min-h-[400px]">
+                    <div class="flex border-b border-white/10 mb-6 gap-2">
+                        <button id="tab-forecast" onclick="switchInnerTab('forecast')" class="px-3 py-2 text-neonBlue border-b-2 border-neonBlue font-bold tracking-widest text-xs md:text-sm transition-colors flex items-center bg-neonBlue/10 rounded-t-md"><i data-lucide="activity" class="w-4 h-4 mr-1 md:mr-2"></i>全景预测</button>
+                        <button id="tab-logic" onclick="switchInnerTab('logic')" class="px-3 py-2 text-gray-400 border-b-2 border-transparent hover:text-white hover:bg-white/5 font-bold tracking-widest text-xs md:text-sm transition-colors flex items-center rounded-t-md"><i data-lucide="cpu" class="w-4 h-4 mr-1 md:mr-2"></i>感知引擎</button>
+                    </div>
+                    
+                    <div id="content-forecast" class="flex flex-col gap-6 w-full flex-1">
+                        <div class="overflow-x-auto no-scrollbar relative w-full border-b border-white/5 pb-4">
+                            <p class="text-xs text-neonBlue/90 font-bold tracking-widest mb-2 flex items-center">
+                                <i data-lucide="clock" class="w-3 h-3 mr-2"></i>24H 趋势图谱
+                            </p>
+                            <div style="width: 1000px; height: 130px; position: relative;">
+                                <canvas id="hourly-chart"></canvas>
+                            </div>
+                            <div id="hourly-icons" class="flex justify-between items-center mt-3" style="width: 1000px; padding: 0 10px;"></div>
+                        </div>
+
+                        <div class="w-full">
+                            <p class="text-xs text-neonBlue/90 font-bold tracking-widest mb-3 flex items-center">
+                                <i data-lucide="calendar-days" class="w-3 h-3 mr-2"></i>中长期预报序列
+                            </p>
+                            <div id="content-15d-horizontal" class="flex gap-3 overflow-x-auto no-scrollbar pb-2"></div>
+                        </div>
+                    </div>
+
+                    <div id="content-logic" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-6 w-full flex-1">
+                        <div class="bg-black/40 p-4 md:p-5 rounded-lg border border-white/10 shadow-inner">
+                            <p class="text-xs text-green-400/90 font-bold tracking-widest mb-5 flex items-center border-b border-green-500/30 pb-2">
+                                <i data-lucide="heart-pulse" class="w-4 h-4 mr-2"></i>仿生防护算法 (AI ADVICE)
+                            </p>
+                            <div class="space-y-6">
+                                <div class="flex items-start gap-4">
+                                    <div class="w-10 h-10 rounded bg-neonBlue/10 border border-neonBlue/30 flex items-center justify-center shrink-0">
+                                        <i data-lucide="shirt" class="w-5 h-5 text-neonBlue"></i>
+                                    </div>
+                                    <div>
+                                        <p class="text-[10px] md:text-xs text-gray-400 mb-1 font-mono tracking-wide">RECOMMENDED.GEAR</p>
+                                        <p class="text-xs md:text-sm text-gray-200 leading-relaxed font-bold" id="logic-clothes">等待数据汇入...</p>
+                                    </div>
+                                </div>
+                                <div class="flex items-start gap-4">
+                                    <div class="w-10 h-10 rounded bg-rose-500/10 border border-rose-500/30 flex items-center justify-center shrink-0">
+                                        <i data-lucide="activity-square" class="w-5 h-5 text-rose-400"></i>
+                                    </div>
+                                    <div>
+                                        <p class="text-[10px] md:text-xs text-gray-400 mb-1 font-mono tracking-wide">HEALTH.RISK.LEVEL</p>
+                                        <p class="text-xs md:text-sm text-gray-200 leading-relaxed font-bold" id="logic-health">分析生物体征风险...</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-col gap-5">
+                            <div class="bg-black/40 p-4 rounded-lg border border-white/10 relative overflow-hidden shadow-inner">
+                                <i data-lucide="sun-dim" class="absolute -right-4 -top-4 w-28 h-28 text-amber-500/5 animate-[spin_60s_linear_infinite]"></i>
+                                <p class="text-xs text-amber-400/90 font-bold tracking-widest mb-4 flex items-center">
+                                    <i data-lucide="satellite" class="w-4 h-4 mr-2"></i>宇宙射电监测
+                                </p>
+                                <div class="flex justify-between items-center relative z-10 px-2">
+                                    <div>
+                                        <p class="text-[10px] text-gray-400 font-mono tracking-widest">SOLAR FLARE</p>
+                                        <p class="font-cyber text-lg md:text-xl text-amber-300 mt-1" id="solar-flare">--</p>
+                                    </div>
+                                    <div class="text-right">
+                                        <p class="text-[10px] text-gray-400 font-mono tracking-widest">GEOMAGNETIC</p>
+                                        <p class="font-cyber text-lg md:text-xl text-amber-300 mt-1" id="geomagnetic">--</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="bg-gradient-to-r from-neonBlue/10 to-transparent p-[1px] rounded-lg">
+                                <div class="bg-black/60 p-4 rounded-lg h-full flex flex-col justify-center relative overflow-hidden">
+                                    <div class="relative z-10">
+                                        <div class="flex items-center justify-between mb-3">
+                                            <p class="text-xs text-neonBlue/90 font-bold tracking-widest flex items-center">
+                                                <i data-lucide="headphones" class="w-4 h-4 mr-2"></i>环境白噪音
+                                            </p>
+                                            <span class="px-2 py-0.5 text-[10px] bg-gray-800 text-gray-400 border border-gray-600 rounded font-bold tracking-widest" id="audio-status">未激活</span>
+                                        </div>
+                                        <div class="flex items-center justify-between mt-2 px-1">
+                                            <div>
+                                                <p class="text-sm md:text-base text-white font-bold tracking-wider" id="audio-track">音频引擎就绪</p>
+                                                <p class="text-[10px] text-gray-500 mt-1">手动启动体验沉浸音效</p>
+                                            </div>
+                                            <button onclick="toggleAudio()" id="audio-btn" class="w-10 h-10 md:w-12 md:h-12 rounded-full bg-neonBlue/10 hover:bg-neonBlue/30 border border-neonBlue flex items-center justify-center transition-all text-neonBlue hover:shadow-[0_0_15px_rgba(0,210,255,0.5)] transform hover:scale-105">
+                                                <i data-lucide="play" class="w-5 h-5 md:w-6 md:h-6 ml-0.5 md:ml-1" id="audio-icon"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- 移动端专享底部导航栏 -->
+    <nav class="fixed bottom-0 left-0 w-full glass-panel !rounded-none !border-x-0 !border-b-0 border-t-neonBlue/30 z-[500] xl:hidden flex justify-around items-center pt-2 pb-safe shadow-[0_-5px_20px_rgba(0,0,0,0.5)]">
+        <button id="nav-btn-1" onclick="switchMobileTab('m-tab-1')" class="mobile-nav-btn flex flex-col items-center gap-1 text-gray-500 hover:text-neonBlue transition-colors w-1/3 py-2">
+            <i data-lucide="map-pinned" class="w-5 h-5"></i>
+            <span class="text-[10px] tracking-widest font-bold mt-1">精细选点</span>
+        </button>
+        <button id="nav-btn-2" onclick="switchMobileTab('m-tab-2')" class="mobile-nav-btn flex flex-col items-center gap-1 text-neonBlue transition-colors w-1/3 py-2">
+            <i data-lucide="cloud-lightning" class="w-5 h-5"></i>
+            <span class="text-[10px] tracking-widest font-bold mt-1">气象全景</span>
+        </button>
+        <button id="nav-btn-3" onclick="switchMobileTab('m-tab-3')" class="mobile-nav-btn flex flex-col items-center gap-1 text-gray-500 hover:text-neonBlue transition-colors w-1/3 py-2">
+            <i data-lucide="activity-square" class="w-5 h-5"></i>
+            <span class="text-[10px] tracking-widest font-bold mt-1">预知分析</span>
+        </button>
+    </nav>
+
+    <!-- 专属长图分享简报模板 (屏幕外隐藏渲染区) -->
+    <div id="export-card" class="fixed left-[-9999px] top-0 w-[800px] bg-[#02050a] text-white p-12 flex flex-col font-sans" style="background-image: radial-gradient(circle at 50% 0%, rgba(0, 100, 180, 0.4) 0%, transparent 70%), linear-gradient(rgba(0, 210, 255, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 210, 255, 0.03) 1px, transparent 1px); background-size: 100% 100%, 40px 40px, 40px 40px;">
+        
+        <!-- Header -->
+        <div class="flex justify-between items-end border-b border-white/10 pb-6 mb-10">
+            <div>
+                <div class="flex items-center gap-3 mb-2">
+                    <i data-lucide="compass" class="text-neonBlue w-10 h-10"></i>
+                    <h1 class="font-cyber text-4xl font-bold tracking-[0.1em] text-white glow-text">NEXGEN OS<span class="text-neonBlue/50 text-2xl ml-3">v4.8</span></h1>
+                </div>
+                <p class="text-sm text-gray-400 tracking-widest font-mono">ATMOSPHERIC DATA BRIEFING</p>
+            </div>
+            <div class="text-right">
+                <p class="font-cyber text-neonBlue text-4xl glow-text leading-none" id="export-time">00:00:00</p>
+                <p class="text-lg text-gray-400 tracking-widest mt-2 font-mono" id="export-date">2026/04/26</p>
+            </div>
+        </div>
+
+        <!-- 锚点与核心温度 -->
+        <div class="glass-panel p-10 mb-8 flex flex-col items-center justify-center relative overflow-hidden text-center min-h-[450px]">
+            <div id="export-glow" class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] rounded-full blur-[100px] pointer-events-none"></div>
+            
+            <p class="text-xl text-neonBlue tracking-widest mb-4 flex items-center relative z-10 font-bold"><i data-lucide="crosshair" class="w-6 h-6 mr-2"></i> 气象锚点</p>
+            <h2 class="text-7xl font-bold tracking-[0.2em] text-white glow-text mb-16 relative z-10" id="export-city">--</h2>
+
+            <div class="flex items-center justify-center gap-12 relative z-10 w-full px-10">
+                <div id="export-icon-container" class="w-44 h-44 drop-shadow-[0_0_30px_rgba(255,255,255,0.4)]"></div>
+                <div class="text-left">
+                    <div class="flex items-start">
+                        <span id="export-temp" class="font-cyber text-[140px] font-bold glow-text leading-none drop-shadow-2xl">--</span>
+                        <span class="font-cyber text-6xl text-neonBlue ml-4 mt-4">°C</span>
+                    </div>
+                    <h3 id="export-desc" class="text-4xl tracking-widest text-gray-200 mt-6 font-bold drop-shadow">--</h3>
+                </div>
+            </div>
+        </div>
+
+        <!-- 空气与体感 -->
+        <div class="grid grid-cols-2 gap-8 mb-8">
+            <div class="glass-panel p-8 flex items-center justify-between border-l-4" id="export-aqi-border">
+                <div>
+                    <p class="text-gray-400 text-xl mb-2 font-bold tracking-widest">大气纯净度 (AQI)</p>
+                    <p id="export-aqi" class="font-cyber text-6xl font-bold text-green-400 glow-text">--</p>
+                </div>
+                <i data-lucide="wind" class="w-14 h-14 text-white/10"></i>
+            </div>
+            <div class="glass-panel p-8 flex items-center justify-between border-l-4 border-l-neonBlue">
+                <div>
+                    <p class="text-gray-400 text-xl mb-2 font-bold tracking-widest">核心体感温度</p>
+                    <p id="export-feels" class="font-cyber text-6xl font-bold text-white glow-text">--°C</p>
+                </div>
+                <i data-lucide="thermometer" class="w-14 h-14 text-white/10"></i>
+            </div>
+        </div>
+
+        <!-- 详细数据网格 -->
+        <div class="grid grid-cols-4 gap-5 mb-8">
+            <div class="glass-panel p-6 flex flex-col items-center justify-center text-center">
+                <p class="text-base text-gray-400 mb-3 flex items-center"><i data-lucide="flag" class="w-5 h-5 mr-1 text-neonBlue"></i> 风速风向</p>
+                <p class="font-cyber text-4xl text-white glow-text mt-2"><span id="export-wind">--</span><span class="text-base text-neonBlue ml-1">km/h</span></p>
+            </div>
+            <div class="glass-panel p-6 flex flex-col items-center justify-center text-center">
+                <p class="text-base text-gray-400 mb-3 flex items-center"><i data-lucide="gauge" class="w-5 h-5 mr-1 text-neonBlue"></i> 绝对气压</p>
+                <p class="font-cyber text-4xl text-white glow-text mt-2"><span id="export-pressure">--</span><span class="text-base text-neonBlue ml-1">hPa</span></p>
+            </div>
+            <div class="glass-panel p-6 flex flex-col items-center justify-center text-center">
+                <p class="text-base text-gray-400 mb-3 flex items-center"><i data-lucide="droplets" class="w-5 h-5 mr-1 text-neonBlue"></i> 大气湿度</p>
+                <p class="font-cyber text-4xl text-white glow-text mt-2"><span id="export-humidity">--</span><span class="text-base text-neonBlue ml-1">%</span></p>
+            </div>
+            <div class="glass-panel p-6 flex flex-col items-center justify-center text-center">
+                <p class="text-base text-gray-400 mb-3 flex items-center"><i data-lucide="sun" class="w-5 h-5 mr-1 text-neonBlue"></i> 紫外辐射</p>
+                <p class="font-cyber text-4xl text-white glow-text mt-2"><span id="export-uv">--</span><span class="text-base text-neonBlue ml-1" id="export-uv-tag"></span></p>
+            </div>
+        </div>
+
+        <!-- 智能建议 -->
+        <div class="glass-panel p-8 mb-8 border border-neonBlue/30">
+            <p class="text-neonBlue tracking-widest mb-8 flex items-center text-2xl font-bold border-b border-neonBlue/30 pb-5">
+                <i data-lucide="cpu" class="w-7 h-7 mr-3"></i>AI 仿生干预建议
+            </p>
+            <div class="space-y-8">
+                <div class="flex items-start gap-6">
+                    <div class="w-14 h-14 rounded bg-neonBlue/10 flex items-center justify-center shrink-0 border border-neonBlue/30">
+                        <i data-lucide="shirt" class="w-7 h-7 text-neonBlue"></i>
+                    </div>
+                    <div>
+                        <p class="text-gray-400 text-sm mb-2 font-mono">GEAR.RECOMMENDATION</p>
+                        <p id="export-clothes" class="text-2xl text-gray-200 leading-relaxed font-bold">--</p>
+                    </div>
+                </div>
+                <div class="flex items-start gap-6">
+                    <div class="w-14 h-14 rounded bg-rose-500/10 flex items-center justify-center shrink-0 border border-rose-500/30">
+                        <i data-lucide="activity-square" class="w-7 h-7 text-rose-400"></i>
+                    </div>
+                    <div>
+                        <p class="text-gray-400 text-sm mb-2 font-mono">HEALTH.RISK.LEVEL</p>
+                        <p id="export-health" class="text-2xl text-gray-200 leading-relaxed font-bold">--</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-auto pt-6 text-center border-t border-white/5 opacity-80">
+            <p class="font-mono text-gray-500 text-base tracking-[0.3em] flex items-center justify-center">
+                <i data-lucide="fingerprint" class="w-5 h-5 mr-3 text-neonBlue/50"></i>
+                AUTHORIZED BY NEXGEN NEURAL NETWORK
+            </p>
+        </div>
+    </div>
+
+    <script>
+        // ==========================================
+        // 移动端底部导航系统控制逻辑
+        // ==========================================
+        function switchMobileTab(targetId) {
+            ['m-tab-1', 'm-tab-2', 'm-tab-3'].forEach(id => {
+                document.getElementById(id).classList.toggle('active', id === targetId);
+            });
+            ['nav-btn-1', 'nav-btn-2', 'nav-btn-3'].forEach(id => {
+                const btn = document.getElementById(id);
+                const isMatch = id.endsWith(targetId.split('-')[2]);
+                btn.classList.toggle('text-neonBlue', isMatch);
+                btn.classList.toggle('text-gray-500', !isMatch);
+            });
+            if(targetId === 'm-tab-1' && map) {
+                setTimeout(() => map.invalidateSize(), 150);
+            }
+        }
+
+        // ==========================================
+        // Canvas 炫酷动态天气粒子引擎
+        // ==========================================
+        const cvs = document.getElementById('bg-canvas');
+        const ctxCvs = cvs.getContext('2d');
+        let particles = [];
+        let pWeatherType = 'sun';
+        let mouse = { x: -1000, y: -1000 };
+
+        window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+        window.addEventListener('touchmove', e => { mouse.x = e.touches[0].clientX; mouse.y = e.touches[0].clientY; }, {passive: true});
+
+        function initParticles() {
+            window.addEventListener('resize', () => { cvs.width = window.innerWidth; cvs.height = window.innerHeight; });
+            cvs.width = window.innerWidth; cvs.height = window.innerHeight;
+            requestAnimationFrame(drawParticles);
+        }
+
+        function setParticleWeather(type) {
+            pWeatherType = type;
+            particles = [];
+            let count = window.innerWidth < 768 ? 40 : 80;
+            if(type.includes('rain') || type.includes('snow')) count = window.innerWidth < 768 ? 80 : 150;
+
+            for(let i=0; i<count; i++) {
+                particles.push({
+                    x: Math.random() * cvs.width, y: Math.random() * cvs.height,
+                    s: Math.random() * 2 + 0.5, a: Math.random() * Math.PI * 2, life: Math.random() * 100
+                });
+            }
+        }
+
+        function drawParticles() {
+            ctxCvs.fillStyle = 'rgba(2, 5, 10, 0.3)';
+            ctxCvs.fillRect(0, 0, cvs.width, cvs.height);
+
+            if (pWeatherType.includes('thunder') && Math.random() < 0.015) {
+                ctxCvs.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.3})`;
+                ctxCvs.fillRect(0, 0, cvs.width, cvs.height);
+            }
+
+            particles.forEach((p, i) => {
+                ctxCvs.beginPath();
+                if(pWeatherType.includes('rain')) {
+                    ctxCvs.fillStyle = 'rgba(0, 210, 255, 0.6)';
+                    ctxCvs.moveTo(p.x, p.y); ctxCvs.lineTo(p.x - p.s * 2, p.y + p.s * 15);
+                    ctxCvs.strokeStyle = ctxCvs.fillStyle; ctxCvs.lineWidth = p.s; ctxCvs.stroke();
+                    p.y += p.s * 15; p.x -= p.s * 2;
+                } else if (pWeatherType.includes('snow')) {
+                    ctxCvs.fillStyle = `rgba(255, 255, 255, ${0.3 + Math.sin(p.life)*0.5})`;
+                    ctxCvs.shadowBlur = 10; ctxCvs.shadowColor = 'white';
+                    ctxCvs.arc(p.x, p.y, p.s * 1.5, 0, Math.PI * 2); ctxCvs.fill(); ctxCvs.shadowBlur = 0;
+                    p.y += p.s * 1.5; p.x += Math.sin(p.a) * 1; p.a += 0.03; p.life += 0.05;
+                } else {
+                    ctxCvs.fillStyle = `rgba(0, 210, 255, ${0.2 + Math.sin(p.life)*0.3})`;
+                    ctxCvs.shadowBlur = 15; ctxCvs.shadowColor = '#00d2ff';
+                    ctxCvs.arc(p.x, p.y, p.s * 1.5, 0, Math.PI * 2); ctxCvs.fill(); ctxCvs.shadowBlur = 0;
+                    p.y -= p.s * 0.4; p.x += Math.sin(p.a) * 0.5; p.a += 0.02; p.life += 0.02;
+
+                    for(let j=i+1; j<particles.length; j++) {
+                        let p2 = particles[j];
+                        let dist = Math.hypot(p.x - p2.x, p.y - p2.y);
+                        if(dist < 100) {
+                            ctxCvs.beginPath(); ctxCvs.strokeStyle = `rgba(0, 210, 255, ${0.15 * (1 - dist/100)})`;
+                            ctxCvs.moveTo(p.x, p.y); ctxCvs.lineTo(p2.x, p2.y); ctxCvs.lineWidth = 1; ctxCvs.stroke();
+                        }
+                    }
+                }
+
+                let dx = mouse.x - p.x; let dy = mouse.y - p.y;
+                let dist = Math.sqrt(dx*dx + dy*dy);
+                if(dist < 150) {
+                    p.x -= dx * 0.03; p.y -= dy * 0.03;
+                    if(!pWeatherType.includes('rain')) {
+                        ctxCvs.beginPath(); ctxCvs.strokeStyle = `rgba(0, 210, 255, ${0.4 * (1 - dist/150)})`;
+                        ctxCvs.moveTo(p.x, p.y); ctxCvs.lineTo(mouse.x, mouse.y); ctxCvs.lineWidth = 1.5; ctxCvs.stroke();
+                    }
+                }
+
+                if(p.y > cvs.height + 50) p.y = -50; if(p.y < -50) p.y = cvs.height + 50;
+                if(p.x > cvs.width + 50) p.x = -50; if(p.x < -50) p.x = cvs.width + 50;
+            });
+            requestAnimationFrame(drawParticles);
+        }
+
+        // ==========================================
+        // Web Audio API 内置引擎
+        // ==========================================
+        class AmbientSynth {
+            constructor() {
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                this.master = this.ctx.createGain(); this.master.gain.value = 0; this.master.connect(this.ctx.destination);
+                this.isPlaying = false; this.nodes = [];
+            }
+            createPinkNoise() {
+                const bufferSize = this.ctx.sampleRate * 2;
+                const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+                const output = buffer.getChannelData(0);
+                let b0=0, b1=0, b2=0, b3=0, b4=0, b5=0, b6=0;
+                for (let i = 0; i < bufferSize; i++) {
+                    let white = Math.random() * 2 - 1;
+                    b0 = 0.99886 * b0 + white * 0.0555179; b1 = 0.99332 * b1 + white * 0.0750759;
+                    b2 = 0.96900 * b2 + white * 0.1538520; b3 = 0.86650 * b3 + white * 0.3104856;
+                    b4 = 0.55000 * b4 + white * 0.5329522; b5 = -0.7616 * b5 - white * 0.0168980;
+                    output[i] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
+                    output[i] *= 0.11; b6 = white * 0.115926;
+                }
+                const noise = this.ctx.createBufferSource(); noise.buffer = buffer; noise.loop = true; return noise;
+            }
+            play(weatherType) {
+                this.stop(); this.isPlaying = true;
+                this.master.gain.setTargetAtTime(1, this.ctx.currentTime, 1);
+                let noise = this.createPinkNoise(); let filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass';
+                
+                if(weatherType === 'rain' || weatherType === 'thunder') { filter.frequency.value = 1500; } 
+                else if(weatherType === 'wind') {
+                    filter.frequency.value = 400; let lfo = this.ctx.createOscillator(); lfo.frequency.value = 0.3; 
+                    let lfoGain = this.ctx.createGain(); lfoGain.gain.value = 400;
+                    lfo.connect(lfoGain); lfoGain.connect(filter.frequency); lfo.start(); this.nodes.push(lfo);
+                } else { 
+                    filter.frequency.value = 200; let lfo = this.ctx.createOscillator(); lfo.frequency.value = 0.1;
+                    let lfoGain = this.ctx.createGain(); lfoGain.gain.value = 250;
+                    lfo.connect(lfoGain); lfoGain.connect(filter.frequency); lfo.start(); this.nodes.push(lfo);
+                }
+                noise.connect(filter); filter.connect(this.master); noise.start(); this.nodes.push(noise);
+            }
+            stop() {
+                if(!this.isPlaying) return;
+                this.master.gain.setTargetAtTime(0, this.ctx.currentTime, 0.5); this.isPlaying = false;
+                setTimeout(() => { if(!this.isPlaying) { this.nodes.forEach(n => { try{ n.stop(); }catch(e){} }); this.nodes = []; } }, 1000);
+            }
+        }
+        const audioSynth = new AmbientSynth();
+
+        // ==========================================
+        // 核心配置与全局状态
+        // ==========================================
+        lucide.createIcons();
+        let map, mapMarker, hourlyChart;
+        const state = { lat: null, lng: null, name: null };
+
+        setInterval(() => {
+            document.getElementById('global-clock').innerText = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+        }, 1000);
+
+        function addLog(text, type = 'info') {
+            const logBox = document.getElementById('sys-log');
+            const time = new Date().toLocaleTimeString('zh-CN', {hour12:false});
+            const color = type === 'error' ? 'text-rose-400' : 'text-neonBlue';
+            const p = document.createElement('p');
+            p.className = `log-entry border-l-2 pl-2 border-white/20 my-1`;
+            if(type === 'error') p.classList.replace('border-white/20', 'border-rose-500');
+            else if(type === 'success') p.classList.replace('border-white/20', 'border-neonBlue');
+            
+            p.innerHTML = `<span class="${color}">[${time}] LOG:</span> ${text}`;
+            logBox.prepend(p);
+            if(logBox.children.length > 25) logBox.removeChild(logBox.lastChild);
+        }
+
+        setInterval(() => {
+            const randomLogs = ["气压数据稳定分析中.", "紫外辐射节点已校准.", "地磁场安全参数监测中.", "粒子仿真系统高效渲染中.", "全天候侦测网络在线."];
+            addLog(randomLogs[Math.floor(Math.random() * randomLogs.length)]);
+        }, 12000);
+
+        function switchInnerTab(target) {
+            const tabF = document.getElementById('tab-forecast'); const tabL = document.getElementById('tab-logic');
+            const contentF = document.getElementById('content-forecast'); const contentL = document.getElementById('content-logic');
+            if (target === 'forecast') {
+                tabF.className = "px-3 md:px-5 py-2.5 text-neonBlue border-b-2 border-neonBlue font-bold tracking-widest text-xs md:text-sm transition-colors flex items-center bg-neonBlue/10 rounded-t-md";
+                tabL.className = "px-3 md:px-5 py-2.5 text-gray-400 border-b-2 border-transparent hover:text-white hover:bg-white/5 font-bold tracking-widest text-xs md:text-sm transition-colors flex items-center rounded-t-md";
+                contentF.classList.remove('hidden'); contentL.classList.add('hidden');
+            } else {
+                tabL.className = "px-3 md:px-5 py-2.5 text-neonBlue border-b-2 border-neonBlue font-bold tracking-widest text-xs md:text-sm transition-colors flex items-center bg-neonBlue/10 rounded-t-md";
+                tabF.className = "px-3 md:px-5 py-2.5 text-gray-400 border-b-2 border-transparent hover:text-white hover:bg-white/5 font-bold tracking-widest text-xs md:text-sm transition-colors flex items-center rounded-t-md";
+                contentL.classList.remove('hidden'); contentF.classList.add('hidden');
+            }
+        }
+
+        const WMO_CODES = {
+            0: { desc: '晴朗', icon: 'sun', color: 'text-amber-400', glow: 'bg-amber-500/20', audio: 'sun' },
+            1: { desc: '大部晴朗', icon: 'cloud-sun', color: 'text-amber-200', glow: 'bg-amber-300/20', audio: 'sun' },
+            2: { desc: '多云', icon: 'cloud', color: 'text-gray-300', glow: 'bg-gray-500/20', audio: 'wind' },
+            3: { desc: '阴天', icon: 'cloudy', color: 'text-gray-400', glow: 'bg-gray-600/20', audio: 'wind' },
+            45: { desc: '雾', icon: 'haze', color: 'text-gray-400', glow: 'bg-gray-600/20', audio: 'wind' },
+            51: { desc: '毛毛雨', icon: 'cloud-drizzle', color: 'text-blue-300', glow: 'bg-blue-500/20', audio: 'rain' },
+            61: { desc: '小雨', icon: 'cloud-rain', color: 'text-blue-400', glow: 'bg-blue-600/20', audio: 'rain' },
+            63: { desc: '中雨', icon: 'cloud-rain', color: 'text-blue-500', glow: 'bg-blue-700/20', audio: 'rain' },
+            65: { desc: '大雨', icon: 'cloud-rain', color: 'text-blue-600', glow: 'bg-blue-800/20', audio: 'rain' },
+            71: { desc: '降雪', icon: 'snowflake', color: 'text-white', glow: 'bg-white/20', audio: 'snow' },
+            80: { desc: '阵雨', icon: 'cloud-rain', color: 'text-blue-400', glow: 'bg-blue-600/20', audio: 'rain' },
+            95: { desc: '雷阵雨', icon: 'cloud-lightning', color: 'text-purple-400', glow: 'bg-purple-600/20', audio: 'thunder' }
+        };
+        function getWeatherInfo(code) { return WMO_CODES[code] || WMO_CODES[code.toString().substring(0,1)+"0"] || { desc: '气象复杂', icon: 'cloud', color: 'text-gray-300', glow: 'bg-gray-500/20', audio: 'wind' }; }
+
+        // ==========================================
+        // 核心地图与双轨搜索系统
+        // ==========================================
+        function initMap() {
+            map = L.map('map', { zoomControl: true }).setView([39.9042, 116.4074], 10);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap', maxZoom: 18 }).addTo(map);
+
+            const customIcon = L.divIcon({ className: 'custom-div-icon', html: "<div class='marker-pulse'></div>", iconSize: [24, 24], iconAnchor: [12, 12] });
+            mapMarker = L.marker([39.9042, 116.4074], { icon: customIcon }).addTo(map);
+
+            map.on('click', async function(e) {
+                const lat = e.latlng.lat; const lng = e.latlng.lng;
+                addLog(`建立新坐标连接: [${lat.toFixed(4)}, ${lng.toFixed(4)}]`);
+                document.getElementById('status-badge').textContent = '定位中...';
+                try {
+                    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=zh-cn`);
+                    const data = await res.json();
+                    let placeName = data?.address?.city || data?.address?.town || data?.address?.county || data?.address?.state || "标记点区域";
+                    addLog(`坐标解析成功: 锁定目标 ${placeName}`, 'success');
+                    fetchWeatherByCoords(lat, lng, placeName);
+                } catch (err) {
+                    addLog('反向解析超时，使用基础坐标集。', 'error');
+                    fetchWeatherByCoords(lat, lng, `坐标区(${lat.toFixed(4)})`);
+                }
+            });
+        }
+
+        function setupSearch(inputId, suggestId) {
+            const inputEl = document.getElementById(inputId);
+            const suggestBox = document.getElementById(suggestId);
+            let localSearchTimeout = null;
+
+            inputEl.addEventListener('input', (e) => {
+                const query = e.target.value.trim();
+                clearTimeout(localSearchTimeout);
+                if (query.length < 2) { suggestBox.classList.add('hidden'); return; }
+                localSearchTimeout = setTimeout(() => {
+                    fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&accept-language=zh-cn&limit=5`)
+                    .then(res => res.json()).then(data => {
+                        if (data && data.length > 0) renderSuggestions(data, suggestBox, inputEl); 
+                        else suggestBox.classList.add('hidden');
+                    }).catch(err => addLog('检索接口访问受限', 'error'));
+                }, 800);
+            });
+
+            document.addEventListener('click', (e) => { 
+                if (!inputEl.contains(e.target) && !suggestBox.contains(e.target)) suggestBox.classList.add('hidden'); 
+            });
+        }
+
+        function renderSuggestions(results, suggestBox, currentInput) {
+            suggestBox.innerHTML = '';
+            results.forEach(item => {
+                const div = document.createElement('div');
+                div.className = "p-3 hover:bg-neonBlue/20 cursor-pointer rounded transition-colors text-white text-sm border-b border-white/5 last:border-0";
+                let nameParts = item.display_name.split(', '); let shortName = nameParts.slice(0, 3).join(', ');
+                div.innerHTML = `<i data-lucide="map-pin" class="w-4 h-4 inline-block mr-2 text-neonBlue"></i>${shortName}`;
+                div.onclick = () => {
+                    suggestBox.classList.add('hidden'); 
+                    document.getElementById('city-input-desktop').value = ''; 
+                    document.getElementById('city-input-mobile').value = '';
+                    addLog(`坐标重定向: ${nameParts[0]}`); fetchWeatherByCoords(item.lat, item.lon, nameParts[0]);
+                };
+                suggestBox.appendChild(div);
+            });
+            lucide.createIcons(); suggestBox.classList.remove('hidden');
+        }
+
+        setupSearch('city-input-desktop', 'search-suggestions-desktop');
+        setupSearch('city-input-mobile', 'search-suggestions-mobile');
+
+        async function fetchWeatherByCoords(lat, lng, name) {
+            const nLat = parseFloat(lat); const nLng = parseFloat(lng);
+            state.lat = nLat; state.lng = nLng; state.name = name;
+            
+            document.getElementById('city-name').textContent = name;
+            document.getElementById('coords-text').textContent = `Lat: ${nLat.toFixed(4)} / Lng: ${nLng.toFixed(4)}`;
+            
+            mapMarker.setLatLng([nLat, nLng]);
+            map.invalidateSize();
+            if (map.getSize().x > 0 && map.getSize().y > 0) map.flyTo([nLat, nLng], 11, { duration: 1.5 });
+            else map.setView([nLat, nLng], 11);
+
+            addLog('请求气象探针数据同步...');
+
+            const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${nLat}&longitude=${nLng}&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,weather_code,surface_pressure,wind_speed_10m,visibility&hourly=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max&timezone=auto&forecast_days=16`;
+            const aqiUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${nLat}&longitude=${nLng}&current=european_aqi&timezone=auto`;
+
+            try {
+                const [weatherRes, aqiRes] = await Promise.all([ fetch(weatherUrl), fetch(aqiUrl).catch(() => null) ]);
+                if (!weatherRes.ok) throw new Error('气象节点无法访问');
+                const weatherData = await weatherRes.json();
+                let aqiData = null; if (aqiRes && aqiRes.ok) aqiData = await aqiRes.json();
+                renderDashboard(weatherData, aqiData);
+                addLog('全数据链路解析完成。', 'success');
+            } catch (err) {
+                addLog(`数据流断开: ${err.message}`, 'error');
+                document.getElementById('status-badge').textContent = '连接异常';
+                document.getElementById('status-badge').className = 'inline-flex items-center px-3 py-1 rounded border border-rose-500 text-rose-400 text-xs shadow-[0_0_10px_rgba(244,63,94,0.3)] bg-rose-900/20';
+            }
+        }
+
+        // ==========================================
+        // 渲染与引擎控制
+        // ==========================================
+        function renderDashboard(data, aqiData) {
+            const current = data.current; const wInfo = getWeatherInfo(current.weather_code);
+
+            document.getElementById('status-badge').textContent = '稳定运作';
+            document.getElementById('status-badge').className = 'inline-flex items-center px-3 py-1 rounded border border-green-500 text-green-400 text-xs font-bold shadow-[0_0_10px_rgba(74,222,128,0.3)] bg-green-900/20';
+
+            document.getElementById('temperature').textContent = Math.round(current.temperature_2m);
+            document.getElementById('feels-like').textContent = Math.round(current.apparent_temperature) + '°C';
+            document.getElementById('humidity-info').textContent = current.relative_humidity_2m + '%';
+            document.getElementById('weather-text').textContent = wInfo.desc;
+            document.getElementById('main-icon').outerHTML = `<i data-lucide="${wInfo.icon}" class="w-20 h-20 md:w-24 md:h-24 ${wInfo.color} drop-shadow-[0_0_20px_rgba(255,255,255,0.4)]" id="main-icon"></i>`;
+            document.getElementById('card-glow').className = `absolute top-0 right-0 w-80 h-80 rounded-full blur-[90px] pointer-events-none transition-all duration-1000 group-hover:bg-opacity-80 ${wInfo.glow}`;
+            
+            document.getElementById('wind-speed').textContent = current.wind_speed_10m.toFixed(1);
+            document.getElementById('pressure-val').textContent = Math.round(current.surface_pressure);
+            document.getElementById('vis-val').textContent = (current.visibility / 1000).toFixed(1);
+            const uv = data.daily.uv_index_max ? data.daily.uv_index_max[0] : '--';
+            document.getElementById('uv-val').textContent = uv; document.getElementById('uv-tag').textContent = uv > 7 ? '(危险)' : uv > 3 ? '(中等)' : '(安全)';
+
+            renderAQI(aqiData); renderHourlyChart(data.hourly); render15DaysHorizontal(data.daily);
+            
+            setParticleWeather(wInfo.icon + (wInfo.desc.includes('雷') ? 'thunder' : ''));
+            runLogicEngine(current.temperature_2m, current.wind_speed_10m, wInfo);
+            lucide.createIcons();
+        }
+
+        function renderAQI(aqiData) {
+            const valEl = document.getElementById('aqi-val'); const tagEl = document.getElementById('aqi-tag');
+            const circle = document.getElementById('aqi-circle'); const advice = document.getElementById('aqi-advice');
+            if (!aqiData || !aqiData.current || aqiData.current.european_aqi === null) {
+                valEl.textContent = 'N/A'; tagEl.textContent = '暂无监测数据'; tagEl.className = 'text-xl font-bold tracking-widest text-gray-500 mt-2';
+                circle.style.strokeDashoffset = 339.3; advice.textContent = "该区域暂无空气质量节点记录。"; return;
+            }
+            const aqi = aqiData.current.european_aqi; valEl.textContent = aqi;
+            let color = '#4ade80'; let status = '优'; let msg = "空气极其清新，适合进行户外数据采集。";
+            if (aqi > 40) { color = '#facc15'; status = '良'; msg = "空气质量可接受，敏感人群注意防护。"; }
+            if (aqi > 60) { color = '#f97316'; status = '轻度污染'; msg = "长期暴露可能有微小风险。"; }
+            if (aqi > 80) { color = '#ef4444'; status = '中度污染'; msg = "建议减少户外活动频率。"; }
+            if (aqi > 100) { color = '#991b1b'; status = '重度污染'; msg = "警告：环境危险，请立刻佩戴过滤面罩。"; }
+            tagEl.textContent = status; tagEl.style.color = color; tagEl.style.textShadow = `0 0 10px ${color}80`; advice.textContent = msg;
+            circle.style.strokeDashoffset = 339.3 - (Math.min(aqi / 150, 1) * 339.3); circle.style.color = color;
+        }
+
+        function renderHourlyChart(hourlyData) {
+            const ctx = document.getElementById('hourly-chart').getContext('2d');
+            const currentHourStr = new Date().toISOString().substring(0, 14) + "00";
+            let startIndex = hourlyData.time.findIndex(t => t >= currentHourStr);
+            if (startIndex === -1) startIndex = 0;
+            const times = hourlyData.time.slice(startIndex, startIndex + 24);
+            const temps = hourlyData.temperature_2m.slice(startIndex, startIndex + 24);
+            const codes = hourlyData.weather_code.slice(startIndex, startIndex + 24);
+
+            if (hourlyChart) hourlyChart.destroy();
+            const gradient = ctx.createLinearGradient(0, 0, 0, 130);
+            gradient.addColorStop(0, 'rgba(0, 210, 255, 0.5)'); gradient.addColorStop(1, 'rgba(0, 210, 255, 0.0)');
+
+            Chart.defaults.color = '#94a3b8'; Chart.defaults.font.family = '"Rajdhani", sans-serif';
+            hourlyChart = new Chart(ctx, {
+                type: 'line', data: { labels: times.map(t => t.substring(11, 16)), datasets: [{ data: temps, borderColor: '#00d2ff', backgroundColor: gradient, borderWidth: 2, pointBackgroundColor: '#0f172a', pointBorderColor: '#00d2ff', pointBorderWidth: 2, pointRadius: 3, pointHoverRadius: 6, fill: true, tension: 0.4 }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { backgroundColor: 'rgba(5, 11, 20, 0.95)', titleFont: { size: 12, family: '"Noto Sans SC"' }, bodyFont: { size: 14, family: 'Rajdhani', weight: 'bold' }, callbacks: { label: function(context) { return `${context.parsed.y} °C`; } }, borderColor: '#00d2ff', borderWidth: 1 } }, scales: { y: { display: false, min: Math.min(...temps) - 3, max: Math.max(...temps) + 3 }, x: { grid: { display: false, drawBorder: false }, ticks: { font: { size: 11 }, maxRotation: 0, autoSkip: false } } }, interaction: { mode: 'index', intersect: false } }
+            });
+
+            const iconsContainer = document.getElementById('hourly-icons'); iconsContainer.innerHTML = '';
+            codes.forEach(code => {
+                const wInfo = getWeatherInfo(code);
+                iconsContainer.insertAdjacentHTML('beforeend', `<div class="flex flex-col items-center justify-center" style="width: ${1000/24}px"><i data-lucide="${wInfo.icon}" class="w-4 h-4 md:w-5 md:h-5 ${wInfo.color} drop-shadow"></i></div>`);
+            });
+        }
+
+        function render15DaysHorizontal(dailyData) {
+            const container = document.getElementById('content-15d-horizontal'); container.innerHTML = '';
+            for (let i = 0; i < Math.min(15, dailyData.time.length); i++) {
+                const maxT = Math.round(dailyData.temperature_2m_max[i]); const minT = Math.round(dailyData.temperature_2m_min[i]);
+                const wInfo = getWeatherInfo(dailyData.weather_code[i]); const dateObj = new Date(dailyData.time[i]);
+                const dayStr = i === 0 ? '今天' : i === 1 ? '明天' : `周${['日','一','二','三','四','五','六'][dateObj.getDay()]}`;
+                container.insertAdjacentHTML('beforeend', `<div class="flex flex-col items-center justify-center p-3 min-w-[85px] md:min-w-[90px] bg-black/40 rounded-lg border border-white/10 hover:border-neonBlue/40 hover:bg-neonBlue/5 transition-all shadow-inner"><span class="font-bold text-gray-200 text-sm mb-1">${dayStr}</span><span class="text-[10px] text-gray-500 mb-3 font-mono">${dateObj.getMonth()+1}/${dateObj.getDate()}</span><i data-lucide="${wInfo.icon}" class="w-5 h-5 md:w-6 md:h-6 ${wInfo.color} mb-4 drop-shadow-[0_0_8px_rgba(255,255,255,0.3)]"></i><div class="flex flex-col items-center font-cyber text-sm w-full"><span class="text-rose-400 font-bold">${maxT}°</span><div class="w-6 h-px bg-white/20 my-1"></div><span class="text-neonBlue font-bold">${minT}°</span></div></div>`);
+            }
+        }
+
+        const TrackNames = { 'rain': '暴雨轰鸣 (Rain)', 'wind': '高空扰动 (Wind)', 'thunder': '雷暴过境 (Thunder)', 'sun': '白噪音 (Sunny)' };
+
+        function runLogicEngine(temp, wind, wInfo) {
+            let clothes = "参数在宜居区间，着装不受限制。";
+            if (wInfo.desc.includes('雨')) clothes = "检测到强水汽降落。建议装备防水外壳，注意行动摩擦力衰减。";
+            else if (temp < 8) clothes = "核心温度急剧下降！强制建议挂载高阻热装甲（羽绒服）。";
+            else if (temp > 32) clothes = "高温辐射警告。建议切换轻量化透气模块，补充机体冷却液。";
+            document.getElementById('logic-clothes').textContent = clothes;
+
+            let health = "心血管及免疫风险：极低。体征预测稳定。";
+            if (temp < 0) health = "【极寒预警】心血管病史人员请限制长时户外暴露，风险激增！";
+            else if (temp > 35) health = "【热射病预警】极端热量积累！停止高强度代谢，谨防脱水。";
+            document.getElementById('logic-health').textContent = health;
+            document.getElementById('logic-health').className = temp < 5 || temp > 35 ? "text-xs md:text-sm text-rose-400 font-bold leading-relaxed" : "text-xs md:text-sm text-gray-200 leading-relaxed font-bold";
+
+            const flareLevels = ['Class B (微弱)', 'Class C (稳定)', 'Class M (活跃)', 'Class X (极端)'];
+            const randomFlare = flareLevels[Math.floor(Math.random() * flareLevels.length)];
+            document.getElementById('solar-flare').textContent = randomFlare;
+            document.getElementById('solar-flare').className = randomFlare.includes('X') ? "font-cyber text-lg md:text-xl text-rose-500 glow-text animate-pulse mt-1" : "font-cyber text-lg md:text-xl text-amber-300 mt-1";
+            document.getElementById('geomagnetic').textContent = `KP = ${(Math.random() * 5).toFixed(1)} (稳定)`;
+
+            window.currentAudioType = wInfo.audio;
+            document.getElementById('audio-track').textContent = `${TrackNames[wInfo.audio] || '环境微风'}`;
+            
+            if (audioSynth.isPlaying) { playAudio(window.currentAudioType); }
+        }
+
+        function playAudio(type) {
+            audioSynth.play(type);
+            document.getElementById('audio-icon').setAttribute('data-lucide', 'square');
+            document.getElementById('audio-btn').className = "w-10 h-10 md:w-12 md:h-12 rounded-full bg-neonBlue border border-neonBlue shadow-[0_0_20px_rgba(0,210,255,0.6)] flex items-center justify-center text-black transform scale-110";
+            const status = document.getElementById('audio-status');
+            status.textContent = '合成中...';
+            status.className = "px-2 py-0.5 text-[10px] bg-neonBlue border border-neonBlue text-black font-bold rounded animate-pulse tracking-widest";
+            lucide.createIcons();
+        }
+
+        function resetAudioUI() {
+            document.getElementById('audio-icon').setAttribute('data-lucide', 'play');
+            document.getElementById('audio-btn').className = "w-10 h-10 md:w-12 md:h-12 rounded-full bg-neonBlue/10 hover:bg-neonBlue/30 border border-neonBlue flex items-center justify-center transition-all text-neonBlue hover:shadow-[0_0_15px_rgba(0,210,255,0.5)] transform hover:scale-105";
+            const status = document.getElementById('audio-status');
+            status.textContent = '已静音';
+            status.className = "px-2 py-0.5 text-[10px] bg-gray-800 text-gray-400 border border-gray-600 rounded font-bold tracking-widest";
+            lucide.createIcons();
+        }
+
+        function toggleAudio() {
+            if (audioSynth.ctx.state === 'suspended') { audioSynth.ctx.resume(); }
+            if (audioSynth.isPlaying) { audioSynth.stop(); resetAudioUI(); } 
+            else { playAudio(window.currentAudioType || 'wind'); }
+        }
+
+        // ==========================================
+        // 渲染分享长图引擎 (智能注入专属简报模板)
+        // ==========================================
+        function exportSnapshot() {
+            addLog("正在生成独立气象简报图像...");
+            const btn = document.querySelector('button[title="生成简报长图"]');
+            const originalHtml = btn.innerHTML;
+            btn.innerHTML = '<i data-lucide="loader" class="w-5 h-5 md:w-6 md:h-6 animate-spin"></i>';
+            lucide.createIcons();
+            
+            // 1. 同步时间戳
+            const now = new Date();
+            document.getElementById('export-time').innerText = now.toLocaleTimeString('zh-CN', { hour12: false });
+            document.getElementById('export-date').innerText = now.toLocaleDateString('zh-CN');
+            
+            // 2. 映射核心数据
+            document.getElementById('export-city').innerText = document.getElementById('city-name').innerText;
+            document.getElementById('export-temp').innerText = document.getElementById('temperature').innerText;
+            document.getElementById('export-desc').innerText = document.getElementById('weather-text').innerText;
+            document.getElementById('export-feels').innerText = document.getElementById('feels-like').innerText;
+            document.getElementById('export-humidity').innerText = document.getElementById('humidity-info').innerText.replace('%', '');
+            
+            // 3. 映射 AQI 及边框高亮
+            const aqiVal = document.getElementById('aqi-val').innerText;
+            const aqiTag = document.getElementById('aqi-tag').innerText;
+            const aqiEl = document.getElementById('export-aqi');
+            aqiEl。innerText = `${aqiVal} ${aqiTag}`;
+            const dynamicColor = document.getElementById('aqi-tag').style.color || '#4ade80';
+            aqiEl。style.color = dynamicColor;
+            document.getElementById('export-aqi-border').style.borderLeftColor = dynamicColor;
+
+            // 4。 映射网格及建议
+            document.getElementById('export-wind').innerText = document.getElementById('wind-speed').innerText;
+            document.getElementById('export-uv').innerText = document.getElementById('uv-val').innerText;
+            document.getElementById('export-uv-tag').innerText = document.getElementById('uv-tag').innerText;
+            document.getElementById('export-pressure').innerText = document.getElementById('pressure-val').innerText;
+            
+            document.getElementById('export-clothes').innerText = document.getElementById('logic-clothes').innerText;
+            document.getElementById('export-health').innerText = document.getElementById('logic-health').innerText;
+            
+            // 5. 跨域克隆动态 SVG 气象图标
+            const mainIconSvg = document.getElementById('main-icon');
+            const iconContainer = document.getElementById('export-icon-container');
+            iconContainer.innerHTML = ''; 
+            if (mainIconSvg && mainIconSvg.tagName === 'svg') {
+                const clone = mainIconSvg.cloneNode(true);
+                clone.setAttribute('width', '100%'); clone.setAttribute('height', '100%');
+                clone.className.baseVal = clone.className.baseVal.replace(/w-\d+|h-\d+|md:w-\d+|md:h-\d+/g, '');
+                iconContainer.appendChild(clone);
+            }
+
+            // 6. 同步氛围光效
+            const glowClass = document.getElementById('card-glow').className;
+            const bgMatch = glowClass.match(/bg-[a-zA-Z0-9-]+\/\d+|bg-[a-zA-Z0-9-]+/);
+            document.getElementById('export-glow').className = `absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] rounded-full blur-[100px] pointer-events-none ${bgMatch ? bgMatch[0] : 'bg-neonBlue/20'}`;
+
+            // 7。 渲染隐形模板并下发图片
+            setTimeout(() => {
+                const exportNode = document.getElementById('export-card');
+                html2canvas(exportNode, {
+                    backgroundColor: '#02050a',
+                    scale: 2, // 使用两倍像素比输出高清图
+                    useCORS: true
+                })。then(canvas => {
+                    const link = document.createElement('a');
+                    link。download = `NEXGEN_简报_${new Date().getTime()}.png`;
+                    link。href = canvas.toDataURL('image/png'); 
+                    link。click();
+                    addLog("简报海报渲染完毕并已保存。", "success");
+                    btn。innerHTML = originalHtml;
+                    lucide.createIcons();
+                })。catch(err => {
+                    addLog("简报渲染失败，请检查浏览器权限。", "error");
+                    btn。innerHTML = originalHtml;
+                    lucide.createIcons();
+                });
+            }， 100);
+        }
+
+        window.onload = () => {
+            initParticles();
+            initMap();
+            addLog('系统部署完毕，强制连接至中国北京节点。');
+            fetchWeatherByCoords(39.9042, 116.4074, '北京市');
+        };
+    </script>
+</body>
+</html>
