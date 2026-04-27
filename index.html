@@ -33,9 +33,20 @@
     </script>
     <style type="text/tailwindcss">
         @layer utilities {
-            .glass-panel { @apply bg-glassBg backdrop-blur-md border border-glassBorder shadow-[0_4px_30px_rgba(0,210,255,0.1)] rounded-xl; }
+            .glass-panel {
+                background: rgba(5, 11, 20, 0.5);
+                backdrop-filter: blur(12px);
+                border: 1px solid rgba(0, 210, 255, 0.15);
+                box-shadow: 0 4px 30px rgba(0, 210, 255, 0.1);
+                border-radius: 0.75rem;
+            }
             .glow-text { text-shadow: 0 0 15px rgba(0, 210, 255, 0.8); }
-            .interactive-hover { @apply transition-all duration-300 hover:border-neonBlue/50 hover:shadow-[0_0_25px_rgba(0,210,255,0.3)] hover:-translate-y-1; }
+            .interactive-hover { transition: all 300ms; }
+            .interactive-hover:hover {
+                border-color: rgba(0, 210, 255, 0.5);
+                box-shadow: 0 0 25px rgba(0, 210, 255, 0.3);
+                transform: translateY(-0.25rem);
+            }
             .no-scrollbar::-webkit-scrollbar { display: none; }
             .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         }
@@ -604,6 +615,55 @@
         lucide.createIcons();
         let map, mapMarker, hourlyChart;
         const state = { lat: null, lng: null, name: null };
+        const geocodeCache = new Map();
+        const GEO_CACHE_TTL = 10 * 60 * 1000;
+        const searchBindings = [];
+        let isSearchOutsideHandlerBound = false;
+
+        function wait(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function getCachedValue(cacheKey) {
+            const hit = geocodeCache.get(cacheKey);
+            if (!hit) return null;
+            if (Date.now() - hit.timestamp > GEO_CACHE_TTL) {
+                geocodeCache.delete(cacheKey);
+                return null;
+            }
+            return hit.value;
+        }
+
+        function setCachedValue(cacheKey, value) {
+            geocodeCache.set(cacheKey, { value, timestamp: Date.now() });
+            if (geocodeCache.size > 120) {
+                const oldestKey = geocodeCache.keys().next().value;
+                geocodeCache.delete(oldestKey);
+            }
+        }
+
+        async function fetchJsonWithRetry(url, options = {}, retries = 1) {
+            let lastError = null;
+            for (let attempt = 0; attempt <= retries; attempt++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (!response.ok) {
+                        const retriable = response.status === 429 || response.status >= 500;
+                        if (!retriable || attempt === retries) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+                        await wait(350 * (attempt + 1));
+                        continue;
+                    }
+                    return await response.json();
+                } catch (error) {
+                    if (error && error.name === 'AbortError') throw error;
+                    lastError = error;
+                    if (attempt < retries) await wait(350 * (attempt + 1));
+                }
+            }
+            throw lastError || new Error('网络请求失败');
+        }
 
         setInterval(() => {
             document.getElementById('global-clock').innerText = new Date().toLocaleTimeString('zh-CN', { hour12: false });
@@ -673,8 +733,12 @@
                 addLog(`建立新坐标连接: [${lat.toFixed(4)}, ${lng.toFixed(4)}]`);
                 document.getElementById('status-badge').textContent = '定位中...';
                 try {
-                    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=zh-cn`);
-                    const data = await res.json();
+                    const reverseKey = `reverse:${lat.toFixed(3)},${lng.toFixed(3)}`;
+                    let data = getCachedValue(reverseKey);
+                    if (!data) {
+                        data = await fetchJsonWithRetry(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=zh-cn`, {}, 1);
+                        setCachedValue(reverseKey, data);
+                    }
                     let placeName = data?.address?.city || data?.address?.town || data?.address?.county || data?.address?.state || "标记点区域";
                     addLog(`坐标解析成功: 锁定目标 ${placeName}`, 'success');
                     fetchWeatherByCoords(lat, lng, placeName);
@@ -689,26 +753,52 @@
             const inputEl = document.getElementById(inputId);
             const suggestBox = document.getElementById(suggestId);
             let localSearchTimeout = null;
+            let localSearchController = null;
+
+            searchBindings.push({ inputEl, suggestBox });
+            if (!isSearchOutsideHandlerBound) {
+                document.addEventListener('click', (e) => {
+                    searchBindings.forEach(({ inputEl: el, suggestBox: box }) => {
+                        if (!el.contains(e.target) && !box.contains(e.target)) box.classList.add('hidden');
+                    });
+                });
+                isSearchOutsideHandlerBound = true;
+            }
 
             inputEl.addEventListener('input', (e) => {
                 const query = e.target.value.trim();
                 clearTimeout(localSearchTimeout);
+                if (localSearchController) localSearchController.abort();
                 if (query.length < 2) { suggestBox.classList.add('hidden'); return; }
                 localSearchTimeout = setTimeout(() => {
-                    fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&accept-language=zh-cn&limit=5`)
-                    .then(res => res.json()).then(data => {
-                        if (data && data.length > 0) renderSuggestions(data, suggestBox, inputEl); 
-                        else suggestBox.classList.add('hidden');
-                    }).catch(err => addLog('检索接口访问受限', 'error'));
+                    const searchKey = `search:${query.toLowerCase()}`;
+                    const cached = getCachedValue(searchKey);
+                    if (cached && cached.length > 0) {
+                        renderSuggestions(cached, suggestBox);
+                        return;
+                    }
+                    localSearchController = new AbortController();
+                    fetchJsonWithRetry(
+                        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&accept-language=zh-cn&limit=5`,
+                        { signal: localSearchController.signal },
+                        1
+                    )
+                    .then(data => {
+                        if (data && data.length > 0) {
+                            setCachedValue(searchKey, data);
+                            renderSuggestions(data, suggestBox);
+                        } else {
+                            suggestBox.classList.add('hidden');
+                        }
+                    })
+                    .catch(err => {
+                        if (err && err.name !== 'AbortError') addLog('检索接口访问受限，已降级为本地缓存', 'error');
+                    });
                 }, 800);
-            });
-
-            document.addEventListener('click', (e) => { 
-                if (!inputEl.contains(e.target) && !suggestBox.contains(e.target)) suggestBox.classList.add('hidden'); 
             });
         }
 
-        function renderSuggestions(results, suggestBox, currentInput) {
+        function renderSuggestions(results, suggestBox) {
             suggestBox.innerHTML = '';
             results.forEach(item => {
                 const div = document.createElement('div');
@@ -808,12 +898,17 @@
 
         function renderHourlyChart(hourlyData) {
             const ctx = document.getElementById('hourly-chart').getContext('2d');
-            const currentHourStr = new Date().toISOString().substring(0, 14) + "00";
+            if (!hourlyData || !hourlyData.time || !hourlyData.temperature_2m || !hourlyData.weather_code) return;
+
+            const now = new Date();
+            const pad = (num) => String(num).padStart(2, '0');
+            const currentHourStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:00`;
             let startIndex = hourlyData.time.findIndex(t => t >= currentHourStr);
-            if (startIndex === -1) startIndex = 0;
+            if (startIndex === -1) startIndex = Math.max(hourlyData.time.length - 24, 0);
             const times = hourlyData.time.slice(startIndex, startIndex + 24);
             const temps = hourlyData.temperature_2m.slice(startIndex, startIndex + 24);
             const codes = hourlyData.weather_code.slice(startIndex, startIndex + 24);
+            if (times.length === 0 || temps.length === 0 || codes.length === 0) return;
 
             if (hourlyChart) hourlyChart.destroy();
             const gradient = ctx.createLinearGradient(0, 0, 0, 130);
@@ -920,12 +1015,12 @@
             const aqiVal = document.getElementById('aqi-val').innerText;
             const aqiTag = document.getElementById('aqi-tag').innerText;
             const aqiEl = document.getElementById('export-aqi');
-            aqiEl。innerText = `${aqiVal} ${aqiTag}`;
+            aqiEl.innerText = `${aqiVal} ${aqiTag}`;
             const dynamicColor = document.getElementById('aqi-tag').style.color || '#4ade80';
-            aqiEl。style.color = dynamicColor;
+            aqiEl.style.color = dynamicColor;
             document.getElementById('export-aqi-border').style.borderLeftColor = dynamicColor;
 
-            // 4。 映射网格及建议
+            // 4. 映射网格及建议
             document.getElementById('export-wind').innerText = document.getElementById('wind-speed').innerText;
             document.getElementById('export-uv').innerText = document.getElementById('uv-val').innerText;
             document.getElementById('export-uv-tag').innerText = document.getElementById('uv-tag').innerText;
@@ -950,27 +1045,27 @@
             const bgMatch = glowClass.match(/bg-[a-zA-Z0-9-]+\/\d+|bg-[a-zA-Z0-9-]+/);
             document.getElementById('export-glow').className = `absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] rounded-full blur-[100px] pointer-events-none ${bgMatch ? bgMatch[0] : 'bg-neonBlue/20'}`;
 
-            // 7。 渲染隐形模板并下发图片
+            // 7. 渲染隐形模板并下发图片
             setTimeout(() => {
                 const exportNode = document.getElementById('export-card');
                 html2canvas(exportNode, {
                     backgroundColor: '#02050a',
                     scale: 2, // 使用两倍像素比输出高清图
                     useCORS: true
-                })。then(canvas => {
+                }).then(canvas => {
                     const link = document.createElement('a');
-                    link。download = `NEXGEN_简报_${new Date().getTime()}.png`;
-                    link。href = canvas.toDataURL('image/png'); 
-                    link。click();
+                    link.download = `NEXGEN_简报_${new Date().getTime()}.png`;
+                    link.href = canvas.toDataURL('image/png'); 
+                    link.click();
                     addLog("简报海报渲染完毕并已保存。", "success");
-                    btn。innerHTML = originalHtml;
+                    btn.innerHTML = originalHtml;
                     lucide.createIcons();
-                })。catch(err => {
+                }).catch(err => {
                     addLog("简报渲染失败，请检查浏览器权限。", "error");
-                    btn。innerHTML = originalHtml;
+                    btn.innerHTML = originalHtml;
                     lucide.createIcons();
                 });
-            }， 100);
+            }, 100);
         }
 
         window.onload = () => {
